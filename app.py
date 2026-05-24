@@ -1,16 +1,19 @@
-
 import streamlit as st
 import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
 from textblob import TextBlob
 
-
 # =========================
 # CONFIG
 # =========================
-st.set_page_config(page_title="AI Trading Assistant", page_icon="📈", layout="wide")
-st.title("📈 Stock Price Predictor ")
+st.set_page_config(
+    page_title="AI Trading Assistant",
+    page_icon="📈",
+    layout="wide"
+)
+
+st.title("📈 Stock Price Predictor")
 
 # =========================
 # SESSION STATE
@@ -22,16 +25,29 @@ if "portfolio" not in st.session_state:
 # DATA LOADER
 # =========================
 def get_data(symbol, period):
-    df = yf.download(symbol, period=period)
+    try:
+        df = yf.download(symbol, period=period)
 
-    if df is None or df.empty:
+        if df is None or df.empty:
+            return None
+
+        # Fix MultiIndex columns
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+
+        # Convert index to column
+        df = df.reset_index()
+
+        # Rename Datetime -> Date if needed
+        if "Datetime" in df.columns:
+            df.rename(columns={"Datetime": "Date"}, inplace=True)
+
+        return df
+
+    except Exception as e:
+        st.error(f"Error fetching data: {e}")
         return None
 
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-
-    df = df.reset_index()
-    return df
 
 # =========================
 # RSI
@@ -43,12 +59,13 @@ def rsi(df, period=14):
     loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
 
     rs = gain / loss
-    rsi = 100 - (100 / (1 + rs))
+    rsi_value = 100 - (100 / (1 + rs))
 
-    return rsi.fillna(50)
+    return rsi_value.fillna(50)
+
 
 # =========================
-# SENTIMENT (simple mock)
+# SENTIMENT
 # =========================
 def sentiment(symbol):
     texts = [
@@ -59,6 +76,7 @@ def sentiment(symbol):
 
     scores = [TextBlob(t).sentiment.polarity for t in texts]
     return sum(scores) / len(scores)
+
 
 # =========================
 # AI SIGNAL ENGINE
@@ -74,8 +92,13 @@ def ai_signal(df, symbol):
 
     latest_rsi = float(df["RSI"].iloc[-1])
 
-    ma20 = float(df["Close"].rolling(20).mean().dropna().iloc[-1])
-    ma50 = float(df["Close"].rolling(50).mean().dropna().iloc[-1])
+    ma20 = float(
+        df["Close"].rolling(20).mean().dropna().iloc[-1]
+    )
+
+    ma50 = float(
+        df["Close"].rolling(50).mean().dropna().iloc[-1]
+    )
 
     sent = sentiment(symbol)
 
@@ -93,7 +116,7 @@ def ai_signal(df, symbol):
     else:
         score -= 15
 
-    # sentiment
+    # Sentiment
     if sent > 0:
         score += 15
     else:
@@ -108,10 +131,25 @@ def ai_signal(df, symbol):
     else:
         return "🟡 HOLD", score
 
+
 # =========================
-# CHART
+# CHART (FIXED)
 # =========================
 def plot_chart(df, symbol):
+
+    # Ensure Date column exists
+    if "Date" not in df.columns:
+        if "Datetime" in df.columns:
+            df.rename(
+                columns={"Datetime": "Date"},
+                inplace=True
+            )
+        else:
+            df = df.reset_index()
+
+    # Normalize column names
+    df.columns = [str(col).title() for col in df.columns]
+
     fig = go.Figure(data=[go.Candlestick(
         x=df["Date"],
         open=df["Open"],
@@ -120,16 +158,29 @@ def plot_chart(df, symbol):
         close=df["Close"]
     )])
 
-    fig.update_layout(template="plotly_dark", title=symbol)
-    st.plotly_chart(fig, use_container_width=True)
+    fig.update_layout(
+        template="plotly_dark",
+        title=f"{symbol} Stock Chart",
+        xaxis_title="Date",
+        yaxis_title="Price"
+    )
+
+    st.plotly_chart(
+        fig,
+        use_container_width=True
+    )
+
 
 # =========================
-# PORTFOLIO FUNCTIONS (FIXED)
+# PORTFOLIO FUNCTIONS
 # =========================
 def add_stock(symbol, shares, buy_price):
+
     for stock in st.session_state.portfolio:
         if stock["symbol"] == symbol:
-            st.warning("Stock already exists in portfolio")
+            st.warning(
+                "Stock already exists in portfolio"
+            )
             return
 
     st.session_state.portfolio.append({
@@ -137,6 +188,7 @@ def add_stock(symbol, shares, buy_price):
         "shares": shares,
         "buy_price": buy_price
     })
+
 
 def show_portfolio():
     st.subheader("💼 Portfolio Tracker")
@@ -148,67 +200,117 @@ def show_portfolio():
     rows = []
 
     for stock in st.session_state.portfolio:
-        data = yf.Ticker(stock["symbol"]).history(period="1d")
+        data = yf.Ticker(
+            stock["symbol"]
+        ).history(period="1d")
 
         if data.empty:
             continue
 
-        close_series = data["Close"].dropna()
+        close_series = (
+            data["Close"].dropna()
+        )
 
         if close_series.empty:
             continue
 
-        current_price = float(close_series.iloc[-1])
+        current_price = float(
+            close_series.iloc[-1]
+        )
 
-        profit = (current_price - stock["buy_price"]) * stock["shares"]
+        profit = (
+            current_price
+            - stock["buy_price"]
+        ) * stock["shares"]
 
         rows.append([
             stock["symbol"],
             stock["shares"],
             stock["buy_price"],
-            current_price,
+            round(current_price, 2),
             round(profit, 2)
         ])
 
-    df = pd.DataFrame(rows, columns=[
-        "Symbol", "Shares", "Buy Price", "Current Price", "P/L"
-    ])
+    if rows:
+        portfolio_df = pd.DataFrame(
+            rows,
+            columns=[
+                "Symbol",
+                "Shares",
+                "Buy Price",
+                "Current Price",
+                "P/L"
+            ]
+        )
 
-    st.dataframe(df)
+        st.dataframe(
+            portfolio_df,
+            use_container_width=True
+        )
+
 
 # =========================
 # INPUTS
 # =========================
-symbol = st.text_input("Stock Symbol", "AAPL")
-period = st.selectbox("Timeframe", ["1mo", "3mo", "6mo", "1y"], index=3)
+symbol = st.text_input(
+    "Stock Symbol",
+    "AAPL"
+)
+
+period = st.selectbox(
+    "Timeframe",
+    ["1mo", "3mo", "6mo", "1y"],
+    index=3
+)
 
 # =========================
 # MAIN ANALYSIS
 # =========================
 if st.button("Run Analysis"):
+
     df = get_data(symbol, period)
 
     if df is None:
         st.error("No data found")
+
     else:
         st.success("Analysis Complete")
 
-        signal, score = ai_signal(df, symbol)
+        signal, score = ai_signal(
+            df,
+            symbol
+        )
 
         st.subheader("📊 AI Signal")
         st.write(f"Signal: {signal}")
-        st.write(f"Confidence Score: {score}/100")
+        st.write(
+            f"Confidence Score: {score}/100"
+        )
 
-        change = ((df["Close"].iloc[-1] - df["Close"].iloc[-2]) / df["Close"].iloc[-2]) * 100
+        if len(df) >= 2:
+            change = (
+                (
+                    df["Close"].iloc[-1]
+                    - df["Close"].iloc[-2]
+                )
+                / df["Close"].iloc[-2]
+            ) * 100
 
-        st.subheader("🔔 Price Alert")
+            st.subheader("🔔 Price Alert")
 
-        if change > 3:
-            st.success(f"🚀 Price Jump +{change:.2f}%")
-        elif change < -3:
-            st.error(f"🔻 Price Drop {change:.2f}%")
-        else:
-            st.info(f"Normal movement {change:.2f}%")
+            if change > 3:
+                st.success(
+                    f"🚀 Price Jump +{change:.2f}%"
+                )
+            elif change < -3:
+                st.error(
+                    f"🔻 Price Drop {change:.2f}%"
+                )
+            else:
+                st.info(
+                    f"Normal movement "
+                    f"{change:.2f}%"
+                )
 
         st.subheader("📉 Chart")
         plot_chart(df, symbol)
@@ -223,17 +325,32 @@ st.subheader("➕ Add to Portfolio")
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    p_symbol = st.text_input("Symbol", key="p_symbol")
+    p_symbol = st.text_input(
+        "Symbol",
+        key="p_symbol"
+    )
 
 with col2:
-    shares = st.number_input("Shares", min_value=1, value=1)
+    shares = st.number_input(
+        "Shares",
+        min_value=1,
+        value=1
+    )
 
 with col3:
-    buy_price = st.number_input("Buy Price", min_value=0.0, value=100.0)
+    buy_price = st.number_input(
+        "Buy Price",
+        min_value=0.0,
+        value=100.0
+    )
 
 if st.button("Add Stock"):
-    if p_symbol.strip() != "":
-        add_stock(p_symbol.upper(), shares, buy_price)
+    if p_symbol.strip():
+        add_stock(
+            p_symbol.upper(),
+            shares,
+            buy_price
+        )
         st.success("Stock added!")
 
 show_portfolio()
