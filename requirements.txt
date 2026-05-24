@@ -1,0 +1,9 @@
+streamlit
+yfinance
+plotly
+numpy
+pandas
+joblib
+xgboost
+newsapi-python
+textblob
